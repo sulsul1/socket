@@ -18,7 +18,7 @@ app.use(cors());
 app.use(bodyParser.json()); // JSON 데이터 파싱용
 
 // 2. Socket.io 설정
-const io = socketIo(server, {
+const io = new Server(server, {
     cors: {
         origin: ["https://sulsul.pe.kr", "http://localhost:8080"], 
         methods: ["GET", "POST"],
