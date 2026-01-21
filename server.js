@@ -1,110 +1,83 @@
+/**
+ * server.js - 실시간 통신 중계 서버
+ * PHP (Backend) -> Node.js (Relay) -> Client (Frontend)
+ */
+
 const express = require('express');
 const http = require('http');
-const socketIo = require('socket.io');
+const { Server } = require('socket.io');
 const cors = require('cors');
+const bodyParser = require('body-parser');
 
+// 앱 초기화
 const app = express();
-app.use(cors());
-app.use(express.json());
-
 const server = http.createServer(app);
 
-// [중요 1] Render가 주는 포트를 쓰거나, 없으면 3000번 사용
-const PORT = process.env.PORT || 3000;
+// 1. CORS 설정 (PHP 서버와 클라이언트가 다른 도메인/포트일 경우 필수)
+app.use(cors());
+app.use(bodyParser.json()); // JSON 데이터 파싱용
 
+// 2. Socket.io 설정
 const io = socketIo(server, {
     cors: {
-        // [중요 2] 주소 뒤에 /newsulsul 같은 경로는 빼야 합니다!
         origin: ["https://sulsul.pe.kr", "http://localhost:8080"], 
         methods: ["GET", "POST"],
         credentials: true
     }
 });
 
-// === [게임 로직 변수] ===
-let waitingPlayer = null; 
-
+// =========================================================
+// [A] 소켓 연결 처리 (클라이언트 <-> 노드 서버)
+// =========================================================
 io.on('connection', (socket) => {
-    console.log(`✅ 접속: ${socket.id}`);
+    console.log(`[Connect] Socket ID: ${socket.id}`);
 
-    // ==========================================
-    // 1. [기존] 1:1 반응속도 게임 로직
-    // ==========================================
-    socket.on('join_battle', (name) => {
-        if (waitingPlayer) {
-            const opponent = waitingPlayer;
-            const roomName = `battle_${opponent.id}_${socket.id}`;
-
-            socket.join(roomName);
-            opponent.join(roomName);
-
-            io.to(roomName).emit('game_ready', { 
-                room: roomName,
-                p1: opponent.id,
-                p2: socket.id
-            });
-
-            waitingPlayer = null;
-
-            const randomDelay = Math.floor(Math.random() * 3000) + 3000;
-            setTimeout(() => {
-                io.to(roomName).emit('game_go', { timestamp: Date.now() });
-            }, randomDelay);
-
-        } else {
-            waitingPlayer = socket;
-            socket.emit('waiting', { msg: '상대방을 기다리는 중...' });
-        }
-    });
-
-    socket.on('player_click', (data) => {
-        io.to(data.room).emit('game_over', { 
-            winner: socket.id, 
-            time: data.reactionTime 
-        });
-    });
-
-    // ==========================================
-    // 2. [추가] 채팅방 & 공유 메모장 로직 (chat1.html용)
-    // ==========================================
-    
-    // (1) 방 입장
-    socket.on('join_class', (roomName) => {
+    // 클라이언트가 "join_class" 이벤트를 보내면 해당 방(Room)에 입장시킴
+    socket.on('join_class', (classId) => {
+        if (!classId) return;
+        
+        const roomName = `class_${classId}`;
         socket.join(roomName);
-        console.log(`🏫 채팅방 입장: [${roomName}] ${socket.id}`);
+        console.log(`[Join] Socket ${socket.id} joined room: ${roomName}`);
     });
 
-    // (2) 채팅 메시지 중계
-    socket.on('send_msg', (data) => {
-        // 나를 포함한 방 안의 모든 사람에게 전송
-        io.to(data.room).emit('receive_msg', data);
-    });
-
-    // (3) 메모장 위치 이동 중계 (드래그)
-    socket.on('memo_move', (data) => {
-        // 나를 제외한 같은 방 사람들에게만 전송
-        socket.to(data.room).emit('memo_update_pos', data);
-    });
-
-    // (4) 메모장 글씨 쓰기 중계
-    socket.on('memo_text', (data) => {
-        // 나를 제외한 같은 방 사람들에게만 전송
-        socket.to(data.room).emit('memo_update_text', data);
-    });
-
-
-    // ==========================================
-    // 3. 접속 종료 처리
-    // ==========================================
     socket.on('disconnect', () => {
-        if (waitingPlayer === socket) {
-            waitingPlayer = null;
-        }
-        console.log(`❌ 퇴장: ${socket.id}`);
+        console.log(`[Disconnect] Socket ID: ${socket.id}`);
     });
 });
 
-// [중요 3] 고정된 3000번 대신 변수(PORT) 사용
+// =========================================================
+// [B] 방송 API (PHP 서버 -> 노드 서버 -> 클라이언트)
+// =========================================================
+// PHP의 socket_helper.php가 이 주소(http://localhost:3000/broadcast)로 데이터를 쏘면
+// Node.js가 받아서 소켓 룸에 뿌려줍니다.
+app.post('/broadcast', (req, res) => {
+    const { class_id, event_type, data } = req.body;
+
+    // 유효성 검사
+    if (!class_id || !event_type) {
+        console.error('[Error] Missing class_id or event_type');
+        return res.status(400).json({ success: false, error: 'Missing parameters' });
+    }
+
+    const roomName = `class_${class_id}`;
+
+    // 해당 반(Room)에 있는 모든 소켓에게 이벤트 발송
+    io.to(roomName).emit(event_type, data);
+
+    console.log(`[Broadcast] To: ${roomName} | Event: ${event_type}`, data);
+    
+    // PHP에게 성공 응답
+    res.json({ success: true });
+});
+
+// =========================================================
+// [C] 서버 실행
+// =========================================================
+const PORT = 3000;
 server.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`-----------------------------------------------`);
+    console.log(`🚀 Node.js Socket Server running on port ${PORT}`);
+    console.log(`👉 POST Endpoint: http://localhost:${PORT}/broadcast`);
+    console.log(`-----------------------------------------------`);
 });
