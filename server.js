@@ -58,7 +58,22 @@ io.on('connection', (socket) => {
         if (!ticketOk(room, ticket)) { socket.emit('join_denied', { room }); return; }
         socket.join(`class_${room}`);
     });
+    //  [A-2] 전시관 «함께 보기»(2026-10-27) — 표를 보이고 들어온 전시관 방(900000 이상)에서만, 정해진 소식(곰 자리 · 말 · 바뀜 알림)만,
+    //   너무 잦지 않게(0.12초) · 작게(8KB) 같은 방 사람들에게 건넨다. 열쇠가 필요한 /broadcast 를 화면이 쓰지 않아도 된다.
+    socket.on('room_emit', (classId, ev, data) => {
+        const room = String(classId ?? ''), name = String(ev ?? '');
+        if (!/^\d{6,12}$/.test(room) || Number(room) < 900000) return;
+        if (!PEER_EVENTS.has(name) || !socket.rooms.has(`class_${room}`)) return;
+        const now = Date.now();
+        if (now - (socket.data.peerAt || 0) < 120) return;
+        socket.data.peerAt = now;
+        let size = 0;
+        try { size = JSON.stringify(data ?? null).length; } catch (e) { return; }
+        if (size > 8000) return;
+        socket.to(`class_${room}`).emit(name, data);
+    });
 });
+const PEER_EVENTS = new Set(['exhb_move', 'exhb_say', 'exhb_art']);
 
 // =========================================================
 // [B] 방송 API (PHP 서버 -> 노드 서버 -> 클라이언트)
